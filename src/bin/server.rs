@@ -1,8 +1,8 @@
+use bytes::Bytes;
+use mini_redis::{Connection, Frame};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
-use mini_redis::{Connection, Frame};
-use bytes::Bytes;
 
 type Db = Arc<Mutex<HashMap<String, Bytes>>>;
 
@@ -20,7 +20,7 @@ async fn main() {
         let (socket, _) = listener.accept().await.unwrap();
 
         let db = db.clone();
-        
+
         tokio::spawn(async move {
             process(socket, db).await;
         });
@@ -31,10 +31,9 @@ async fn process(socket: TcpStream) {
     use mini_redis::Command::{self, Get, Set};
     use std::collections::HashMap;
 
-
     // create the variable to store values
     let mut db = HashMap::new();
-    
+
     // The `Connection` lets us read/write redis **frames** instead
     // of byte streams. The `Connection` type is defined by mini-redis.
     let mut connection = Connection::new(socket);
@@ -62,4 +61,3 @@ async fn process(socket: TcpStream) {
         connection.write_frame(&response).await.unwrap();
     }
 }
-

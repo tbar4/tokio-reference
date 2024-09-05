@@ -65,3 +65,33 @@ let (tx, rx) = oneshot::channel();
 ```
 
 Unlike `mpsc`, no capacity is specified as the capacity is always one, and neither handle can be cloned. To receive responses back from the manager task, before sending a command, a `oneshot` channel is created. the `Sender` half of the channel is included in the command to the manager task. The receive half is used to receive the response.
+
+Calling `send` on a `oneshot::Sender` completes immediately and does not require an `.await`. This is because `send` on a `oneshot` channel will always fail or succeed immediately. Sending a value on a `oneshot::channel` returns `Err` when the receiver half is dropped. This indicates the receiver is no longer interested in the response. In our scenario, the receiver canelling interest is an acceptable event. The `Err` returned by `resp.send(...)` does not need to be handled.
+
+## Backpressure and Bounded Channels
+
+Whenever concurrency or queuing is introduced it is important to ensure that the queuing is bounded and the system will gracefully handle the load. Unbounded queues will evenutally fill up all available memory and cause the system to fail in unpredictable ways. Tokio takes care to avoid implicit queuing. A big part of this is the fact that async operations are lazy. Consider the following:
+
+```rust
+loop {
+  async_op();
+}
+```
+
+If the async operation runs eagerly, the loop will repeadetly queue a new `async_op` to run without ensuring the previous operation completed. This results in implicit unbounded queuing. Callback based systems and eager future based systems are particularily susceptible to this. However, with Tokio async Rust, the above snippet will not result in `async_op` running at all. This is because `.await` is never called. If the snippet is updated to use `.await`, then the loop waits for the operation to complete before starting over. 
+
+```rust
+loop {
+  // Will not repeat until `async_op` completes
+  async_op().await;
+}
+```
+
+Concurrency and queuing must be explicitly introduced. Ways to do this include: 
+
+* `tokio::spawn`
+* `select!`
+* `join!`
+* `mpsc::channel`
+
+When doing so, take care to ensure the total amount of concurrency is bounded. For example, when writing a TCP accept loop, ensure that the total number of open sockets is bounded. When using `mpsc::channel`, pick a maneagable channel capacity. Specific bound values will be application specific. Taking care and picking good bounds is a big part of writing reliable tokio applications. 
