@@ -140,3 +140,34 @@ Additonally, when using `Vec<u8>`, the buffer must be **initialized**. `vec![0; 
 
 ## Parsing
 
+Let's look at the `parse_frame()` function. Parsing is done in two steps: 
+
+1) Ensure a full frame is buffered and find the end index of the frame.
+2) Parse the frame.
+
+The `mini-redis` crate provices us with a function for both of these steps:
+
+1) `Frame::check`
+2) `Frame::parse`
+
+We will also reuse the `Buf` abstraction to help. A `Buf` is passed into `Frame::check`. As the `check` function iterates the passed in buffer, the internal cursor will be advanced. When `check` returns the buffer's internal cursor points to the end of the frame.
+
+The relevant thing to note is that `Buf`'s "byte iterator" style APIs are used. These fetch data and advance the internal cursor. For example, to parse a frame, the first byte is checked to determine the type of the frame. The function used is `Buf::get_u8`. This fetches the byte at the current cursor's position and advances the cursor by one.
+
+## Buffered Writes
+
+The other half of the framing API is the `write_frame(frame)` function. This function writes an entire frame to the socket. In order to minimize `write` syscalls, writes will be buffered. A write buffer is maintained and frames are encoded to this buffer befire being written to the socket. However, unlike `read_frame()`, the entire frame is not always buffere to a byte array before writing to the socket. 
+
+Consider a bulk stream frame. The value being written is `Frame::Bulk(Bytes)`. the wire format of a bulk frame is a frame head, which consists of the `$` character followed by the data length in bytes. The majority of the frame is the contents of the `Bytes` value. If the data is large, copying it to an intermediate buffer would be costly. 
+
+Tom implement buffered writes, we will use the `BufWriter` struct. This struc is initialized with a `T: AsyncWrite` and implements `AsyncWrite` itself. When `write` is called on `BufWriter`, the write does not go directly to the inner writer, but to a buffer. When the buffer is full, the contents are flusehd to the inner writer and the inner buffer is cleared. There are also optimizations that allow bypassing the buffer in cerain cases. 
+
+The functions used here are provided by `AsyncWriteExt`. They are available on `TcpStream` as well, but it would not be advisable to issue single byte writes without the intermediate buffer. 
+
+* `write_u8` writes a single byte to the writer
+* `write_all` writes the entire slice to the writer
+* `write_decimal` is implemented by mini-redis
+
+The function ends with a call to `self.stream.flush().await`. Because `BufWriter` stores writes in an intermediate buffer, calls to `write` do no guarentee that the data is writtne to the socket. Before returning, we want the frame to be written to the socket. The call to `flush()` writes any data pending in the buffer to the socket. 
+
+Another alternative would be to not call `flush()` in `write_frame()`. Instead, provide a `flush()` function on `Connection`. This would allow the caller to write queue multiple small frames in the write buffer then write them al to the socket with one `write` syscall. Doing this complicates the `Connection` API. Simplicity is one of Mini-Redis' goals, so we decided to include the `flush().await` call in `fn write_frame()`.

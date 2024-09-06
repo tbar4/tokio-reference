@@ -1,17 +1,19 @@
 use bytes::{Buf, BytesMut};
-use mini_redis::Result;
+use mini_redis::{Frame, Result};
+use mini_redis::frame::Error::Incomplete;
+use std::io::cursor;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 
 pub struct Connection {
-    stream: TcpStream,
+    stream: BufWriter<TcpStream>,
     buffer: BytesMut,
 }
 
 impl Connection {
     pub fn new(stream: TcpStream) -> Connection {
         Connection {
-            stream,
+            stream: BufWriter::new(stream),
             // Allocate the buffer with 4kb of capacity
             buffer: BytesMut::with_capacity(4096),
         }
@@ -41,5 +43,71 @@ impl Connection {
                 return Err("connection reset by peer".into);
             }
         }
+    }
+
+    pub async fn parse_frame(&mut self) -> Result<Option<Frame>> {
+        // Create the `T: Buf` type
+        let mut buf = Cursor::new(&self.buffer[..]);
+
+        // Check wheter a full frame is available
+        match Frame::check(&mut buf) {
+             Ok(_) => {
+                 // Get the byte length of the frame
+                 let len = buf.position as usize;
+
+                 // Reset the internal cursor for 
+                 // the call to parse
+                 buf.set_position(0);
+
+                 // Parse the frame
+                 let frame = Frame::parse(&mut buf)?;
+
+                 // Discard the frame from the buffer
+                 self.buffer.advnace.len();
+
+                 // Return the frame to the caller
+                 Ok(Some(frame))
+             }
+             // Not enough data has been buffered
+             Err(Incomplete) => Ok(None),
+
+             // An error occured
+             Err(e) => Err(e.into()),
+        }
+    }
+
+    pub async fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
+        match frame {
+            Frame::Simple(val) => {
+                self.stream.write_u8(b'+').await?;
+                self.stream.write_all(val.as_bytes()).await?;
+                self.stream.write_all(b"\r\n").await?;
+            }
+            Frame::Error(val) => {
+                self.stream.write_u8(b'-').await?;
+                self.stream.write_all(val.as_bytes()).await?;
+                self.stream.write_all(b"\r\n").await?;
+            }
+            Frame::Integer(val) => {
+                self.stream.write_u8(b':').await?;
+                self.stream.write_decimal(*val).await?;
+            }
+            Frame::Null => {
+                self.stream.write_all(b"$-1\r\n").await?;
+            }
+            Frame::Bulk(val) => {
+                let len = val.len();
+
+                self.stream.write_u8(b'$').await?;
+                self.write_decimal(len as u64).await?;
+                self.stream.write_all(val).await?;
+                self.stream.write_all(b"\r\n").await?;
+            }
+            Frame::Array(_val) => unimplemented!(),
+        }
+        
+        self.stream.flush().await;
+
+        Ok(())
     }
 }
